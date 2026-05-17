@@ -68,12 +68,11 @@ class GPT2SentimentClassifier(torch.nn.Module):
         힌트: 현재 훈련 반복루프에서 손실 함수로 `F.cross_entropy`를 사용하고 있음을 고려하여
         적절한 반환값이 무엇인지 생각해보시오.
     '''
-    # gpt2.py forward()는 {'last_hidden_state': ..., 'last_token': ...} 반환
+    # GPT-2 forward 후 마지막 토큰 추출
     gpt_output = self.gpt(input_ids, attention_mask)
-
-    # 마지막 non-padding 토큰의 hidden state (gpt2.py에서 이미 계산해줌)
     last_token = gpt_output['last_token']   # (batch_size, hidden_size)
 
+    # dropout 후 분류
     pooled = self.dropout(last_token)
     logits = self.classifier(pooled)        # (batch_size, num_labels)
 
