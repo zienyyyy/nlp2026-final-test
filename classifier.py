@@ -56,8 +56,8 @@ class GPT2SentimentClassifier(torch.nn.Module):
     '''
     TODO: BERT 임베딩의 감정 분류를 위해 필요한 인스턴스 변수를 생성하시오.
     '''
-    ### 완성시켜야 할 빈 코드 블록
-    raise NotImplementedError
+    self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
+    self.classifier = torch.nn.Linear(config.hidden_size, self.num_labels)
 
 
   def forward(self, input_ids, attention_mask):
@@ -68,8 +68,15 @@ class GPT2SentimentClassifier(torch.nn.Module):
         힌트: 현재 훈련 반복루프에서 손실 함수로 `F.cross_entropy`를 사용하고 있음을 고려하여
         적절한 반환값이 무엇인지 생각해보시오.
     '''
-    ### 완성시켜야 할 빈 코드 블록
-    raise NotImplementedError
+    # GPT-2 forward 후 마지막 토큰 추출
+    gpt_output = self.gpt(input_ids, attention_mask)
+    last_token = gpt_output['last_token']   # (batch_size, hidden_size)
+
+    # dropout 후 분류
+    pooled = self.dropout(last_token)
+    logits = self.classifier(pooled)        # (batch_size, num_labels)
+
+    return logits
 
 
 class SentimentDataset(Dataset):
