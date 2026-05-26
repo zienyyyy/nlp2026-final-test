@@ -70,7 +70,26 @@ class ParaphraseGPT(nn.Module):
     패러프레이즈가 아닌 경우에는 토큰 "no" (BPE index 3919)가 될 것이다.
     """
     ### 완성시켜야 할 빈 코드 블록
-    raise NotImplementedError
+    gpt_output = self.gpt(input_ids, attention_mask)
+    last_token = gpt_output['last_token']
+
+    binary_logits = self.paraphrase_detection_head(last_token)
+
+    vocab_size = self.gpt.word_embedding.num_embeddings
+    logits = torch.full(
+      (binary_logits.size(0), vocab_size),
+      -1e9,
+      device=binary_logits.device,
+      dtype=binary_logits.dtype
+    )
+
+    no_token_id = 3919
+    yes_token_id = 8505
+
+    logits[:, no_token_id] = binary_logits[:, 0]
+    logits[:, yes_token_id] = binary_logits[:, 1]
+
+    return logits
 
 
 
