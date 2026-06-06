@@ -162,13 +162,16 @@ def train(args):
       num_batches += 1
 
     train_loss = train_loss / num_batches
-    dev_acc, dev_f1, *_ = model_eval_paraphrase(para_dev_dataloader, model, device)
 
-    if dev_acc > best_dev_acc:
-      best_dev_acc = dev_acc
+    try:
+      dev_acc, dev_f1, *_ = model_eval_paraphrase(para_dev_dataloader, model, device)
+      if dev_acc > best_dev_acc:
+        best_dev_acc = dev_acc
+        save_model(model, optimizer, args, args.filepath)
+      print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc :: {dev_acc :.3f}")
+    except Exception as e:
+      print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, eval failed ({e}), saving model anyway")
       save_model(model, optimizer, args, args.filepath)
-
-    print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc :: {dev_acc :.3f}")
 
 
 @torch.no_grad()
