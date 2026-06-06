@@ -31,6 +31,7 @@ from evaluation import model_eval_paraphrase, model_test_paraphrase
 from models.gpt2 import GPT2Model
 
 from optimizer import AdamW
+from transformers import get_linear_schedule_with_warmup
 
 TQDM_DISABLE = False
 
@@ -110,12 +111,12 @@ def save_model(model, optimizer, args, filepath):
 def train(args):
   """Quora 데이터셋에서 Paraphrase Detection을 위한 GPT-2 훈련."""
   device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-  # 데이터, 해당 데이터셋 및 데이터로드 생성하기.
   para_train_data = load_paraphrase_data(args.para_train)
   para_dev_data = load_paraphrase_data(args.para_dev)
 
-  para_train_data = ParaphraseDetectionDataset(para_train_data, args)
-  para_dev_data = ParaphraseDetectionDataset(para_dev_data, args)
+  # 학습: Symmetric Training 활성화 / 평가: 비활성화
+  para_train_data = ParaphraseDetectionDataset(para_train_data, args, symmetric=True)
+  para_dev_data = ParaphraseDetectionDataset(para_dev_data, args, symmetric=False)
 
   para_train_dataloader = DataLoader(para_train_data, shuffle=True, batch_size=args.batch_size,
                                      collate_fn=para_train_data.collate_fn)
@@ -126,34 +127,56 @@ def train(args):
   model = ParaphraseGPT(args)
   model = model.to(device)
 
-  lr = args.lr
-  optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
+  optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=0.)
+
+  # LR Scheduler: warmup(10%) + linear decay
+  total_steps = len(para_train_dataloader) * args.epochs
+  warmup_steps = int(total_steps * 0.1)
+  scheduler = get_linear_schedule_with_warmup(
+    optimizer,
+    num_warmup_steps=warmup_steps,
+    num_training_steps=total_steps
+  )
+
   best_dev_acc = 0
+  no_id, yes_id = 3919, 8505
 
   for epoch in range(args.epochs):
     model.train()
     train_loss = 0
     num_batches = 0
     for batch in tqdm(para_train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
-      # 입력을 가져와서 GPU로 보내기(이 모델을 CPU에서 훈련시키는 것을 권장하지 않는다).
       b_ids, b_mask, labels = batch['token_ids'], batch['attention_mask'], batch['labels'].flatten()
       b_ids = b_ids.to(device)
       b_mask = b_mask.to(device)
       labels = labels.to(device)
 
-      # 손실, 그래디언트를 계산하고 모델 파라미터 업데이트. 
       optimizer.zero_grad()
-      logits = model(b_ids, b_mask)
-      preds = torch.argmax(logits, dim=1)
-      loss = F.cross_entropy(logits, labels, reduction='mean')
+
+      # R-Drop: 같은 배치를 두 번 forward (dropout mask가 다름)
+      logits1 = model(b_ids, b_mask)
+      logits2 = model(b_ids, b_mask)
+
+      # Cross-entropy loss
+      ce_loss = 0.5 * (F.cross_entropy(logits1, labels) + F.cross_entropy(logits2, labels))
+
+      # KL divergence (yes/no 위치만 추출해서 계산)
+      yn1 = torch.stack([logits1[:, no_id], logits1[:, yes_id]], dim=1)
+      yn2 = torch.stack([logits2[:, no_id], logits2[:, yes_id]], dim=1)
+      kl_loss = 0.5 * (
+        F.kl_div(F.log_softmax(yn1, dim=-1), F.softmax(yn2, dim=-1), reduction='batchmean') +
+        F.kl_div(F.log_softmax(yn2, dim=-1), F.softmax(yn1, dim=-1), reduction='batchmean')
+      )
+
+      loss = ce_loss + 0.7 * kl_loss
       loss.backward()
       optimizer.step()
+      scheduler.step()
 
       train_loss += loss.item()
       num_batches += 1
 
     train_loss = train_loss / num_batches
-
     dev_acc, dev_f1, *_ = model_eval_paraphrase(para_dev_dataloader, model, device)
 
     if dev_acc > best_dev_acc:
@@ -214,7 +237,7 @@ def get_args():
   parser.add_argument("--epochs", type=int, default=10)
   parser.add_argument("--use_gpu", action='store_true')
 
-  parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
+  parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=32)
   parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
   parser.add_argument("--model_size", type=str,
                       help="The model size as specified on hugging face. DO NOT use the xl model.",
