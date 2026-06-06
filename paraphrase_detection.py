@@ -114,14 +114,13 @@ def train(args):
   para_train_data = load_paraphrase_data(args.para_train)
   para_dev_data = load_paraphrase_data(args.para_dev)
 
-  # 학습: Symmetric Training 활성화 / 평가: 비활성화
-  para_train_data = ParaphraseDetectionDataset(para_train_data, args, symmetric=True)
+  para_train_data = ParaphraseDetectionDataset(para_train_data, args, symmetric=False)
   para_dev_data = ParaphraseDetectionDataset(para_dev_data, args, symmetric=False)
 
   para_train_dataloader = DataLoader(para_train_data, shuffle=True, batch_size=args.batch_size,
-                                     collate_fn=para_train_data.collate_fn)
+                                     collate_fn=para_train_data.collate_fn, num_workers=4, pin_memory=True)
   para_dev_dataloader = DataLoader(para_dev_data, shuffle=False, batch_size=args.batch_size,
-                                   collate_fn=para_dev_data.collate_fn)
+                                   collate_fn=para_dev_data.collate_fn, num_workers=4, pin_memory=True)
 
   args = add_arguments(args)
   model = ParaphraseGPT(args)
@@ -153,22 +152,8 @@ def train(args):
 
       optimizer.zero_grad()
 
-      # R-Drop: 같은 배치를 두 번 forward (dropout mask가 다름)
-      logits1 = model(b_ids, b_mask)
-      logits2 = model(b_ids, b_mask)
-
-      # Cross-entropy loss
-      ce_loss = 0.5 * (F.cross_entropy(logits1, labels) + F.cross_entropy(logits2, labels))
-
-      # KL divergence (yes/no 위치만 추출해서 계산)
-      yn1 = torch.stack([logits1[:, no_id], logits1[:, yes_id]], dim=1)
-      yn2 = torch.stack([logits2[:, no_id], logits2[:, yes_id]], dim=1)
-      kl_loss = 0.5 * (
-        F.kl_div(F.log_softmax(yn1, dim=-1), F.softmax(yn2, dim=-1), reduction='batchmean') +
-        F.kl_div(F.log_softmax(yn2, dim=-1), F.softmax(yn1, dim=-1), reduction='batchmean')
-      )
-
-      loss = ce_loss + 0.7 * kl_loss
+      logits = model(b_ids, b_mask)
+      loss = F.cross_entropy(logits, labels, reduction='mean')
       loss.backward()
       optimizer.step()
       scheduler.step()
@@ -237,7 +222,7 @@ def get_args():
   parser.add_argument("--epochs", type=int, default=10)
   parser.add_argument("--use_gpu", action='store_true')
 
-  parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=32)
+  parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=64)
   parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
   parser.add_argument("--model_size", type=str,
                       help="The model size as specified on hugging face. DO NOT use the xl model.",
